@@ -7,25 +7,31 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/go-chi/chi/v5"
 )
 
+// chirp is like a tweet
 type chirp struct {
 	Body string `json:"body"`
 	Id   int    `json:"id"`
 }
 
+// DB represents the database's path
 type DB struct {
 	mux  *sync.RWMutex
 	path string
 }
+
+// DBStructure represents the structure of the database
 type DBStructure struct {
 	Chirps map[int]chirp `json:"chirps"`
 }
 
+// newDB creates a new database in the given path
 func newDB(path string) (*DB, error) {
 	dbStructure := DBStructure{Chirps: make(map[int]chirp)}
 	dat, err := json.MarshalIndent(dbStructure, "", "  ")
@@ -39,9 +45,29 @@ func newDB(path string) (*DB, error) {
 	}, nil
 }
 
-// TODO: complete loadDB
-// func (db *DB) loadDB
+// loadDB reads the database file into memory
+func (db *DB) loadDB() (DBStructure, error) {
+	chirpsBytes, err := os.ReadFile(db.path)
+	if err != nil {
+		return DBStructure{}, err
+	}
+	dbStructure := DBStructure{}
+	err = json.Unmarshal(chirpsBytes, &dbStructure)
+	if err != nil {
+		return DBStructure{}, err
+	}
+	return dbStructure, nil
+}
 
+func (db *DB) writeDB(dbStructure DBStructure) error {
+	dat, err := json.MarshalIndent(dbStructure, "", " ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(db.path, dat, 0644)
+}
+
+// createChirp creates a chirp and saves it to the database
 func (db *DB) createChirp(body string) (chirp, error) {
 	db.mux.Lock()
 	defer db.mux.Unlock()
@@ -49,13 +75,7 @@ func (db *DB) createChirp(body string) (chirp, error) {
 	if err != nil {
 		return chirp{}, err
 	}
-	chirpsBytes, err := os.ReadFile(db.path)
-	if err != nil {
-		return chirp{}, err
-	}
-	// chirpsBytes to the map
-	dbStructure := DBStructure{}
-	err = json.Unmarshal(chirpsBytes, &dbStructure)
+	dbStructure, err := db.loadDB()
 	if err != nil {
 		return chirp{}, err
 	}
@@ -71,15 +91,30 @@ func (db *DB) createChirp(body string) (chirp, error) {
 		Id:   id,
 	}
 	dbStructure.Chirps[id] = c
-	dat, _ := json.MarshalIndent(dbStructure, "", " ")
-	err = os.WriteFile(db.path, dat, 0644)
-	if err != nil {
-		return chirp{}, err
-	}
-
+	db.writeDB(dbStructure)
 	return c, nil
 }
 
+// getChirpByID returns a chirp by chirpID
+func (db *DB) getChirpByID(chirpID int) (chirp, error) {
+	db.mux.Lock()
+	defer db.mux.Unlock()
+	err := db.ensureDB()
+	if err != nil {
+		return chirp{}, err
+	}
+	dbStructure, err := db.loadDB()
+	if err != nil {
+		return chirp{}, err
+	}
+	ch := dbStructure.Chirps[chirpID]
+	if ch.Body == "" {
+		return chirp{}, fmt.Errorf("chirp not found")
+	}
+	return ch, nil
+}
+
+// getChirps returns all chirps in the database
 func (db *DB) getChirps() ([]chirp, error) {
 	db.mux.Lock()
 	defer db.mux.Unlock()
@@ -87,12 +122,7 @@ func (db *DB) getChirps() ([]chirp, error) {
 	if err != nil {
 		return nil, err
 	}
-	chirpsBytes, err := os.ReadFile(db.path)
-	if err != nil {
-		return nil, err
-	}
-	dbStructure := DBStructure{}
-	err = json.Unmarshal(chirpsBytes, &dbStructure)
+	dbStructure, err := db.loadDB()
 	if err != nil {
 		return nil, err
 	}
@@ -103,6 +133,7 @@ func (db *DB) getChirps() ([]chirp, error) {
 	return chirps, nil
 }
 
+// ensureDB checks if the database file exists, if not, it creates it
 func (db *DB) ensureDB() error {
 	_, err := os.ReadFile(db.path)
 	if err != nil {
@@ -116,6 +147,7 @@ func (db *DB) ensureDB() error {
 	return nil
 }
 
+// apiConfig is a struct that contains the number of hits to the file server
 type apiConfig struct {
 	fileServerHits int
 }
@@ -158,9 +190,9 @@ func main() {
 	handler := http.StripPrefix("/app", http.FileServer(http.Dir(".")))
 	appRouter.Handle("/app/*", apiCfg.middlewareMetricsInc(handler))
 	appRouter.Handle("/app", apiCfg.middlewareMetricsInc(handler))
-	// apiRouter.Post("/validate_chirp", http.HandlerFunc(validateChirp))
 	apiRouter.Post("/chirps", http.HandlerFunc(validateChirp))
 	apiRouter.Get("/chirps", http.HandlerFunc(getChirps))
+	apiRouter.Get("/chirps/{chirpID}", http.HandlerFunc(getChirpByID))
 	apiRouter.Get("/healthz", http.HandlerFunc(ready))
 	metricsRouter.Get("/metrics", http.HandlerFunc(apiCfg.getHits))
 	apiRouter.Handle("/reset", http.HandlerFunc(apiCfg.reset))
@@ -174,6 +206,26 @@ func main() {
 		Handler: corsMux,
 	}
 	serve.ListenAndServe()
+}
+
+func getChirpByID(w http.ResponseWriter, r *http.Request) {
+	// get the chirpID
+	chirpID := r.PathValue("chirpID")
+	ID, err := strconv.Atoi(chirpID)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	chirp, err := db.getChirpByID(ID)
+	if err != nil {
+		log.Println(err)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	dat, _ := json.Marshal(chirp)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(dat)
 }
 
 func getChirps(w http.ResponseWriter, r *http.Request) {
@@ -191,6 +243,7 @@ func getChirps(w http.ResponseWriter, r *http.Request) {
 	w.Write(dat)
 }
 
+// sortChirps sorts the chirps by id
 func sortChirps(chirps []chirp) {
 	sort.Slice(chirps, func(i, j int) bool {
 		return chirps[i].Id < chirps[j].Id
@@ -243,6 +296,7 @@ func validateChirp(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusCreated, cleanChirp)
 }
 
+// clean chirps from the words: {kerfuffle,sharbert,fornax}
 func cleaningChirp(old string) (new string) {
 	new = strings.ReplaceAll(old, "kerfuffle", "****")
 	new = strings.ReplaceAll(new, "Kerfuffle", "****")
