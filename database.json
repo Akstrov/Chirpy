@@ -1,12 +1,9 @@
 {
- "chirps": {
+ "chirps": {},
+ "users": {
   "1": {
-   "body": "I reneed a **** to go to bed sooner, **** !",
+   "email": "nKXkZ@example.com",
    "id": 1
-  },
-  "2": {
-   "body": "I reneed a **** to go to bed sooner, **** !",
-   "id": 2
   }
  }
 }

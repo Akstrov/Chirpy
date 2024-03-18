@@ -20,6 +20,12 @@ type chirp struct {
 	Id   int    `json:"id"`
 }
 
+// user struct
+type user struct {
+	Email string `json:"email"`
+	Id    int    `json:"id"`
+}
+
 // DB represents the database's path
 type DB struct {
 	mux  *sync.RWMutex
@@ -29,11 +35,15 @@ type DB struct {
 // DBStructure represents the structure of the database
 type DBStructure struct {
 	Chirps map[int]chirp `json:"chirps"`
+	Users  map[int]user  `json:"users"`
 }
 
 // newDB creates a new database in the given path
 func newDB(path string) (*DB, error) {
-	dbStructure := DBStructure{Chirps: make(map[int]chirp)}
+	dbStructure := DBStructure{
+		Chirps: make(map[int]chirp),
+		Users:  make(map[int]user),
+	}
 	dat, err := json.MarshalIndent(dbStructure, "", "  ")
 	if err != nil {
 		return nil, err
@@ -45,20 +55,49 @@ func newDB(path string) (*DB, error) {
 	}, nil
 }
 
+func (db *DB) createUser(email string) (user, error) {
+	db.mux.Lock()
+	defer db.mux.Unlock()
+
+	err := db.ensureDB()
+	if err != nil {
+		return user{}, err
+	}
+	dbStructure, err := db.loadDB()
+	if err != nil {
+		return user{}, err
+	}
+	id := 0
+	for k := range dbStructure.Users {
+		if k > id {
+			id = k
+		}
+	}
+	id++
+	u := user{
+		Email: email,
+		Id:    id,
+	}
+	dbStructure.Users[id] = u
+	db.writeDB(dbStructure)
+	return u, nil
+}
+
 // loadDB reads the database file into memory
 func (db *DB) loadDB() (DBStructure, error) {
-	chirpsBytes, err := os.ReadFile(db.path)
+	DBBytes, err := os.ReadFile(db.path)
 	if err != nil {
 		return DBStructure{}, err
 	}
 	dbStructure := DBStructure{}
-	err = json.Unmarshal(chirpsBytes, &dbStructure)
+	err = json.Unmarshal(DBBytes, &dbStructure)
 	if err != nil {
 		return DBStructure{}, err
 	}
 	return dbStructure, nil
 }
 
+// writeDB saves the database to disk
 func (db *DB) writeDB(dbStructure DBStructure) error {
 	dat, err := json.MarshalIndent(dbStructure, "", " ")
 	if err != nil {
@@ -193,6 +232,7 @@ func main() {
 	apiRouter.Post("/chirps", http.HandlerFunc(validateChirp))
 	apiRouter.Get("/chirps", http.HandlerFunc(getChirps))
 	apiRouter.Get("/chirps/{chirpID}", http.HandlerFunc(getChirpByID))
+	apiRouter.Post("/users", http.HandlerFunc(createUser))
 	apiRouter.Get("/healthz", http.HandlerFunc(ready))
 	metricsRouter.Get("/metrics", http.HandlerFunc(apiCfg.getHits))
 	apiRouter.Handle("/reset", http.HandlerFunc(apiCfg.reset))
@@ -206,6 +246,29 @@ func main() {
 		Handler: corsMux,
 	}
 	serve.ListenAndServe()
+}
+
+func createUser(w http.ResponseWriter, r *http.Request) {
+	decoder := json.NewDecoder(r.Body)
+	u := user{}
+	err := decoder.Decode(&u)
+	if err != nil {
+		// return json error
+		log.Println(err)
+		respondWithError(w, http.StatusBadRequest, "something went wrong")
+		return
+	}
+	// return json success with id
+	user, err := db.createUser(u.Email)
+	if err != nil {
+		log.Println(err)
+		respondWithError(w, http.StatusBadRequest, "something went wrong")
+		return
+	}
+	dat, _ := json.Marshal(user)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(dat)
 }
 
 func getChirpByID(w http.ResponseWriter, r *http.Request) {

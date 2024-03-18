@@ -23,10 +23,20 @@ Content-Type: application/json
 
 GET http://localhost:8080/api/chirps
 
+GET http://localhost:8080/api/chirps/3
+
 
 POST http://localhost:8080/api/chirps
 Content-Type: application/json
 
 {
   "body": "lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum."
+}
+
+
+POST http://localhost:8080/api/users
+Content-Type: application/json
+
+{
+  "email" : "nKXkZ@example.com"
 }
