@@ -265,10 +265,7 @@ func createUser(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, http.StatusBadRequest, "something went wrong")
 		return
 	}
-	dat, _ := json.Marshal(user)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write(dat)
+	respondWithJSON(w, http.StatusCreated, user)
 }
 
 func getChirpByID(w http.ResponseWriter, r *http.Request) {
@@ -276,34 +273,28 @@ func getChirpByID(w http.ResponseWriter, r *http.Request) {
 	chirpID := r.PathValue("chirpID")
 	ID, err := strconv.Atoi(chirpID)
 	if err != nil {
-		w.WriteHeader(http.StatusNotFound)
+		respondWithError(w, http.StatusNotFound, err.Error())
+		// w.WriteHeader(http.StatusNotFound)
 		return
 	}
 	chirp, err := db.getChirpByID(ID)
 	if err != nil {
 		log.Println(err)
-		w.WriteHeader(http.StatusNotFound)
+		respondWithError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	dat, _ := json.Marshal(chirp)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write(dat)
+	respondWithJSON(w, http.StatusOK, chirp)
 }
 
 func getChirps(w http.ResponseWriter, r *http.Request) {
 	chirps, err := db.getChirps()
 	if err != nil {
 		log.Println(err)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
+		respondWithError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	sortChirps(chirps)
-	dat, _ := json.Marshal(chirps)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write(dat)
+	respondWithJSON(w, http.StatusOK, chirps)
 }
 
 // sortChirps sorts the chirps by id
@@ -371,12 +362,13 @@ func cleaningChirp(old string) (new string) {
 }
 
 func ready(w http.ResponseWriter, r *http.Request) {
-	// change Content-Type: text/plain; charset=utf-8
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	// change status code to 200
-	w.WriteHeader(http.StatusOK)
-	// change response body
-	w.Write([]byte("OK"))
+	respondWithJSON(w, http.StatusOK, "OK")
+	// // change Content-Type: text/plain; charset=utf-8
+	// w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	// // change status code to 200
+	// w.WriteHeader(http.StatusOK)
+	// // change response body
+	// w.Write([]byte("OK"))
 }
 
 func middlewareCors(next http.Handler) http.Handler {

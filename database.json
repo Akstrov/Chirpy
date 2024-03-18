@@ -1,9 +1,4 @@
 {
- "chirps": {},
- "users": {
-  "1": {
-   "email": "nKXkZ@example.com",
-   "id": 1
-  }
- }
+  "chirps": {},
+  "users": {}
 }
