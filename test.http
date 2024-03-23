@@ -38,5 +38,31 @@ POST http://localhost:8080/api/users
 Content-Type: application/json
 
 {
-  "email" : "nKXkZ@example.com"
+  "email" : "nKXkZ@example.com",
+  "password" : "success"
+}
+
+POST http://localhost:8080/api/login
+Content-Type: application/json
+
+{
+    "email" : "nKXkZ@example.com",
+    "password" : "success"
+}
+
+POST http://localhost:8080/api/login
+Content-Type: application/json
+
+{
+    "email" : "nKXkZ@example.com",
+    "password" : "fail"
+}
+
+PUT http://localhost:8080/api/users
+Content-Type: application/json
+Authorization: Bearer eyJhbGciOiJIUzM4NCIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjaGlycHkiLCJzdWIiOiIxIiwiZXhwIjoxNzExMzAxMjk2LCJpYXQiOjE3MTEyMTQ4OTZ9.FEWNm7pWg_sbkbvI-81TfLgUNXdLkeiwLrMqLHW0e1SRU8NQW-gs3AtRMR6gBvQM
+
+{
+  "email" : "testPut@example.com",
+  "password" : "success"
 }

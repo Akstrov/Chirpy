@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,8 +11,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/joho/godotenv"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // chirp is like a tweet
@@ -22,8 +27,11 @@ type chirp struct {
 
 // user struct
 type user struct {
-	Email string `json:"email"`
-	Id    int    `json:"id"`
+	Email     string `json:"email"`
+	Password  string `json:"password"`
+	Token     string `json:"token"`
+	Id        int    `json:"id"`
+	ExpiresIn int    `json:"expires_in_seconds"`
 }
 
 // DB represents the database's path
@@ -55,7 +63,49 @@ func newDB(path string) (*DB, error) {
 	}, nil
 }
 
-func (db *DB) createUser(email string) (user, error) {
+func (db *DB) updateUser(id int, sentUser user) (user, error) {
+	db.mux.Lock()
+	defer db.mux.Unlock()
+	dbStructure, err := db.loadDB()
+	if err != nil {
+		return user{}, err
+	}
+	for k, u := range dbStructure.Users {
+		if u.Id == id {
+			bytes, err := bcrypt.GenerateFromPassword([]byte(sentUser.Password), bcrypt.DefaultCost)
+			if err != nil {
+				return user{}, err
+			}
+			entry := dbStructure.Users[k]
+			entry.Email = sentUser.Email
+			entry.Password = string(bytes)
+			dbStructure.Users[k] = entry
+			db.writeDB(dbStructure)
+			return user{
+				Email: entry.Email,
+				Id:    entry.Id,
+			}, nil
+		}
+	}
+	return user{}, fmt.Errorf("user not found")
+}
+
+func (db *DB) lookupUserByEmail(email string) (user, error) {
+	db.mux.Lock()
+	defer db.mux.Unlock()
+	dbStructure, err := db.loadDB()
+	if err != nil {
+		return user{}, err
+	}
+	for _, u := range dbStructure.Users {
+		if u.Email == email {
+			return u, nil
+		}
+	}
+	return user{}, fmt.Errorf("user not found")
+}
+
+func (db *DB) createUser(email, password string) (user, error) {
 	db.mux.Lock()
 	defer db.mux.Unlock()
 
@@ -68,19 +118,28 @@ func (db *DB) createUser(email string) (user, error) {
 		return user{}, err
 	}
 	id := 0
-	for k := range dbStructure.Users {
+	for k, u := range dbStructure.Users {
+		// check if user already exists
+		if u.Email == email {
+			return user{}, fmt.Errorf("user already exists")
+		}
 		if k > id {
 			id = k
 		}
 	}
 	id++
+	pwd, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return user{}, nil
+	}
 	u := user{
-		Email: email,
-		Id:    id,
+		Email:    email,
+		Password: string(pwd),
+		Id:       id,
 	}
 	dbStructure.Users[id] = u
 	db.writeDB(dbStructure)
-	return u, nil
+	return user{Id: id, Email: email}, nil
 }
 
 // loadDB reads the database file into memory
@@ -188,6 +247,7 @@ func (db *DB) ensureDB() error {
 
 // apiConfig is a struct that contains the number of hits to the file server
 type apiConfig struct {
+	jwtSecret      string
 	fileServerHits int
 }
 
@@ -221,11 +281,24 @@ func (cfg *apiConfig) reset(w http.ResponseWriter, r *http.Request) {
 var db *DB
 
 func main() {
-	db, _ = newDB("database.json")
+	godotenv.Load()
+	jwtSecret := os.Getenv("JWT_SECRET")
+	apiCfg := apiConfig{}
+	apiCfg.jwtSecret = jwtSecret
+
+	db = &DB{
+		path: "prodDB",
+		mux:  &sync.RWMutex{},
+	}
+	dbg := flag.Bool("debug", false, "Enable debug mode")
+	flag.Parse()
+	if *dbg {
+		fmt.Print("debuging...")
+		db, _ = newDB("database.json")
+	}
 	appRouter := chi.NewRouter()
 	apiRouter := chi.NewRouter()
 	metricsRouter := chi.NewRouter()
-	apiCfg := apiConfig{}
 	handler := http.StripPrefix("/app", http.FileServer(http.Dir(".")))
 	appRouter.Handle("/app/*", apiCfg.middlewareMetricsInc(handler))
 	appRouter.Handle("/app", apiCfg.middlewareMetricsInc(handler))
@@ -233,6 +306,8 @@ func main() {
 	apiRouter.Get("/chirps", http.HandlerFunc(getChirps))
 	apiRouter.Get("/chirps/{chirpID}", http.HandlerFunc(getChirpByID))
 	apiRouter.Post("/users", http.HandlerFunc(createUser))
+	apiRouter.Put("/users", http.HandlerFunc(apiCfg.updateUserHandle))
+	apiRouter.Post("/login", http.HandlerFunc(apiCfg.attemptLogin))
 	apiRouter.Get("/healthz", http.HandlerFunc(ready))
 	metricsRouter.Get("/metrics", http.HandlerFunc(apiCfg.getHits))
 	apiRouter.Handle("/reset", http.HandlerFunc(apiCfg.reset))
@@ -248,6 +323,89 @@ func main() {
 	serve.ListenAndServe()
 }
 
+func (cfg *apiConfig) updateUserHandle(w http.ResponseWriter, r *http.Request) {
+	header := r.Header.Get("Authorization")
+	// strip prefix "Bearer " from Token
+	authToken := strings.TrimPrefix(header, "Bearer ")
+	token, err := jwt.ParseWithClaims(authToken, &jwt.RegisteredClaims{}, func(token *jwt.Token) (interface{}, error) {
+		return []byte(cfg.jwtSecret), nil
+	})
+	if err != nil {
+		log.Println(err)
+		respondWithError(w, http.StatusUnauthorized, "bad token")
+		return
+	}
+	stringId, err := token.Claims.GetSubject()
+	if err != nil {
+		log.Println(err)
+		respondWithError(w, http.StatusUnauthorized, "bad token")
+		return
+	}
+	id, err := strconv.Atoi(stringId)
+	if err != nil {
+		log.Println(err)
+		respondWithError(w, http.StatusUnauthorized, "bad token")
+		return
+	}
+	// get the body
+	decoder := json.NewDecoder(r.Body)
+	sentUser := user{}
+	err = decoder.Decode(&sentUser)
+	if err != nil {
+		log.Println(err)
+		respondWithError(w, http.StatusBadRequest, "bad user format")
+		return
+	}
+	user, err := db.updateUser(id, sentUser)
+	if err != nil {
+		log.Println(err)
+		respondWithError(w, http.StatusUnauthorized, "bad token")
+		return
+	}
+	respondWithJSON(w, http.StatusOK, user)
+}
+
+func (cfg *apiConfig) attemptLogin(w http.ResponseWriter, r *http.Request) {
+	decoder := json.NewDecoder(r.Body)
+	sentUser := user{}
+	err := decoder.Decode(&sentUser)
+	if err != nil {
+		log.Println(err)
+		respondWithError(w, http.StatusBadRequest, "bad user format")
+		return
+	}
+	dbUser, err := db.lookupUserByEmail(sentUser.Email)
+	if err != nil {
+		log.Println(err)
+		respondWithError(w, http.StatusBadRequest, "user not found")
+		return
+	}
+	err = bcrypt.CompareHashAndPassword([]byte(dbUser.Password), []byte(sentUser.Password))
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "bad password")
+		return
+	}
+
+	if dbUser.ExpiresIn == 0 || dbUser.ExpiresIn > 24*60*60 {
+		dbUser.ExpiresIn = 24 * 60 * 60
+	}
+
+	claim := jwt.RegisteredClaims{
+		Issuer:    "chirpy",
+		IssuedAt:  jwt.NewNumericDate(time.Now()),
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Second * time.Duration(dbUser.ExpiresIn))),
+		Subject:   strconv.Itoa(dbUser.Id),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS384, claim)
+	signedJWT, err := token.SignedString([]byte(cfg.jwtSecret))
+	if err != nil {
+		log.Println(err)
+		respondWithError(w, http.StatusInternalServerError, "server error")
+		return
+	}
+	respondWithJSON(w, http.StatusOK, user{Email: dbUser.Email, Token: signedJWT, Id: dbUser.Id})
+}
+
 func createUser(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
 	u := user{}
@@ -259,10 +417,10 @@ func createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// return json success with id
-	user, err := db.createUser(u.Email)
+	user, err := db.createUser(u.Email, u.Password)
 	if err != nil {
 		log.Println(err)
-		respondWithError(w, http.StatusBadRequest, "something went wrong")
+		respondWithError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
 	respondWithJSON(w, http.StatusCreated, user)
